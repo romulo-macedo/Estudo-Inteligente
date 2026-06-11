@@ -51,8 +51,9 @@ export default function App() {
   const [priorityWords, setPriorityWords] = useState<PriorityWord[]>([]);
   const [activeWord, setActiveWord] = useState<string>("");
 
-  // Manual Gemini API Key Configuration
+  // Manual Gemini & OpenRouter API Key Configuration
   const [geminiApiKey, setGeminiApiKey] = useState<string>("");
+  const [openRouterApiKey, setOpenRouterApiKey] = useState<string>("");
   const [showSettingsModal, setShowSettingsModal] = useState<boolean>(false);
 
   // Word Bank Sub-Tabs & Filtering
@@ -96,16 +97,62 @@ export default function App() {
 
   // Load state from client SQLite, fallback to localStorage on mount
   useEffect(() => {
-    // Load custom Gemini API Key
+    // Load custom API Keys
     const savedApiKey = localStorage.getItem("english_gemini_api_key");
     if (savedApiKey) {
       setGeminiApiKey(savedApiKey);
     }
+    const savedOpenRouterKey = localStorage.getItem("english_openrouter_api_key");
+    if (savedOpenRouterKey) {
+      setOpenRouterApiKey(savedOpenRouterKey);
+    }
+
+    const loadStateFromLocalStorageOnly = () => {
+      console.warn("[App] Usando persistência exclusiva via LocalStorage (Vercel/Static).");
+      const savedCache = localStorage.getItem("english_translation_cache");
+      if (savedCache) {
+        try { setTranslationCache(JSON.parse(savedCache)); } catch (e) {}
+      }
+      const savedWords = localStorage.getItem("english_priority_words");
+      if (savedWords) {
+        try { setPriorityWords(JSON.parse(savedWords)); } catch (e) {}
+      }
+      const savedCards = localStorage.getItem("english_flashcards");
+      if (savedCards) {
+        try { setFlashcards(JSON.parse(savedCards)); } catch (e) {}
+      }
+      const todayStr = new Date().toISOString().split("T")[0];
+      const savedMetrics = localStorage.getItem("english_daily_metrics");
+      if (savedMetrics) {
+        try {
+          const parsed = JSON.parse(savedMetrics);
+          const existingToday = parsed.find((m: any) => m.date === todayStr);
+          if (!existingToday) {
+            parsed.push({
+              date: todayStr,
+              translatedCount: 0,
+              drawCount: 0,
+              flashcardsPracticed: 0,
+              activeSeconds: 0
+            });
+          }
+          setActivityMetrics(parsed);
+        } catch (e) {}
+      } else {
+        const initialMetrics = [
+          { date: "2026-06-08", translatedCount: 8, drawCount: 4, flashcardsPracticed: 12, activeSeconds: 1540 },
+          { date: "2026-06-09", translatedCount: 15, drawCount: 9, flashcardsPracticed: 18, activeSeconds: 2600 },
+          { date: "2026-06-10", translatedCount: 11, drawCount: 6, flashcardsPracticed: 10, activeSeconds: 1980 },
+          { date: todayStr, translatedCount: 0, drawCount: 0, flashcardsPracticed: 0, activeSeconds: 0 }
+        ];
+        setActivityMetrics(initialMetrics);
+      }
+    };
 
     const loadStateFromSQLite = async () => {
       try {
         const response = await fetch("/api/app-state");
-        if (response.ok) {
+        if (response && response.ok) {
           const state = await response.json();
           
           if (state.english_translation_cache) {
@@ -179,9 +226,13 @@ export default function App() {
               saveStateToSQLite("english_daily_metrics", initialMetrics);
             }
           }
+        } else {
+          // Response not OK (like 404 on Vercel)
+          loadStateFromLocalStorageOnly();
         }
       } catch (err) {
-        console.error("Erro ao carregar estados do banco SQLite:", err);
+        console.warn("Erro ao carregar estados do banco SQLite. Usando contingência local:", err);
+        loadStateFromLocalStorageOnly();
       }
     };
 
@@ -270,6 +321,172 @@ export default function App() {
     }
   };
 
+  // Client-side Direct AI Translation Compiler
+  const translateDirectlyOnClient = async (word: string, context: string = ""): Promise<Translation> => {
+    const cleanWord = word.trim().toLowerCase().replace(/[.,\/#!$%\^&\*;:{}=\-_`~()?"']/g, "");
+    
+    const prompt = `Traduza e analise detalhadamente a seguinte palavra ou expressão em inglês para fins de aprendizado de idioma: "${word.trim()}".
+${context ? `Contexto de onde o estudante encontrou a palavra: "${context}"` : ""}
+
+Você DEVE preencher todos os campos do formato JSON exigidos no esquema da resposta. Forneça:
+1. "word": A própria palavra normalizada (ex: "${word.trim()}").
+2. "translation": A tradução mais adequada direta para o português.
+3. "phonetic": A escrita fonética aproximada no padrão IPA / inglês (ex: /bəˈnænə/).
+4. "partOfSpeech": A classe gramatical em inglês (ex: noun, verb, adjective, etc.).
+5. "definition": Uma definição simples e concisa escrita totalmente EM INGLÊS.
+6. "explanation": Uma explicação didática em português sobre o uso dessa palavra, nuances ou gírias se houver.
+7. "level": O nível CEFR sugerido dessa palavra (valores aceitos: "A1", "A2", "B1", "B2", "C1", "C2").
+8. "examples": Uma lista de exatamente 3 exemplos úteis no idioma Inglês com suas respectivas traduções correspondentes para o Português que façam sentido contextual.`;
+
+    // 1. Try Gemini Client-Side if API key is in State (saved in localStorage)
+    if (geminiApiKey && geminiApiKey.trim() !== "") {
+      try {
+        console.log("[Client Translation] Usando chave Gemini direta no cliente...");
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiApiKey.trim()}`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: {
+              responseMimeType: "application/json",
+              responseSchema: {
+                type: "OBJECT",
+                properties: {
+                  word: { type: "STRING" },
+                  translation: { type: "STRING" },
+                  phonetic: { type: "STRING" },
+                  partOfSpeech: { type: "STRING" },
+                  definition: { type: "STRING" },
+                  explanation: { type: "STRING" },
+                  level: { type: "STRING" },
+                  examples: {
+                    type: "ARRAY",
+                    items: {
+                      type: "OBJECT",
+                      properties: {
+                        en: { type: "STRING" },
+                        pt: { type: "STRING" }
+                      },
+                      required: ["en", "pt"]
+                    }
+                  }
+                },
+                required: ["word", "translation", "phonetic", "partOfSpeech", "definition", "explanation", "level", "examples"]
+              }
+            }
+          })
+        });
+
+        if (response.ok) {
+          const resJson = await response.json();
+          const text = resJson.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (text) {
+            return JSON.parse(text.trim());
+          }
+        } else {
+          console.warn("[Client Translation] Resposta do Gemini Client-side não foi 200 OK:", response.status);
+        }
+      } catch (gemErr: any) {
+        console.warn("[Client Translation] Falha ao traduzir localmente via Gemini:", gemErr.message);
+      }
+    }
+
+    // 2. Try OpenRouter Client-Side if API key is in State (saved in localStorage)
+    if (openRouterApiKey && openRouterApiKey.trim() !== "") {
+      try {
+        console.log("[Client Translation] Usando chave OpenRouter direta no cliente...");
+        const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${openRouterApiKey.trim()}`,
+            "Content-Type": "application/json",
+            "HTTP-Referer": window.location.origin,
+            "X-Title": "English Notebook App"
+          },
+          body: JSON.stringify({
+            model: "google/gemini-1.5-flash", 
+            messages: [
+              {
+                role: "user",
+                content: prompt + "\nO retorno corporal deve conter estritamente um JSON estruturado válido e nada mais."
+              }
+            ],
+            response_format: { type: "json_object" }
+          })
+        });
+
+        if (response.ok) {
+          const resJson = await response.json();
+          const content = resJson.choices?.[0]?.message?.content;
+          if (content) {
+            return JSON.parse(content.trim());
+          }
+        } else {
+          console.warn("[Client Translation] Resposta do OpenRouter Client-side não foi 200 OK:", response.status);
+        }
+      } catch (orErr: any) {
+        console.warn("[Client Translation] Falha ao traduzir localmente via OpenRouter:", orErr.message);
+      }
+    }
+
+    // 3. Static dictionary fallback
+    const STATIC_DICT: Record<string, Translation> = {
+      banana: {
+        word: "banana",
+        translation: "banana",
+        phonetic: "/bəˈnænə/",
+        partOfSpeech: "noun",
+        definition: "A long curved fruit which grows in clusters and has soft pulpy flesh and yellow skin when ripe.",
+        explanation: "Fruta tropical amarela que amadurece em cachos, muito rica em potássio e energia.",
+        level: "A1",
+        examples: [
+          { en: "He peeled a delicious sweet banana.", pt: "Ele descascou uma deliciosa e doce banana." },
+          { en: "Add some sliced banana into my yogurt.", pt: "Adicione um pouco de banana fatiada no meu iogurte." },
+          { en: "A banana tree is growing in the garden.", pt: "Uma bananeira está crescendo no jardim." }
+        ],
+        timestamp: Date.now()
+      },
+      apple: {
+        word: "apple",
+        translation: "maçã",
+        phonetic: "/ˈæp.əl/",
+        partOfSpeech: "noun",
+        definition: "A round fruit with red, green, or yellow skin and crisp white flesh.",
+        explanation: "Fruta redonda e crocante de pele vermelha ou verde, símbolo de saúde.",
+        level: "A1",
+        examples: [
+          { en: "I ate a green apple for snack.", pt: "Eu comi uma maçã verde no lanche." },
+          { en: "Her mother baked a delicious apple pie.", pt: "A mãe dela assou uma deliciosa torta de maçã." },
+          { en: "The apple fell down from the tall branch.", pt: "A maçã caiu lá de cima do galho alto." }
+        ],
+        timestamp: Date.now()
+      }
+    };
+
+    if (STATIC_DICT[cleanWord]) {
+      return STATIC_DICT[cleanWord];
+    }
+
+    // 4. Ultimate simple automatic translation builder
+    return {
+      word: word.trim(),
+      translation: `${word.trim()}`,
+      phonetic: "/.../",
+      partOfSpeech: "Palavra (Modo Offline)",
+      definition: `The word '${word.trim()}' was processed. Configure your Gemini or OpenRouter API Key in the settings gear icon (⚙️) or verify the API integrity.`,
+      explanation: `Significado de '${word.trim()}'. Ative a sua própria Chave de API do Google Gemini ou OpenRouter clicando no ícone de engrenagem (⚙️) no canto superior direito para liberar traduções ricas via IA.`,
+      examples: [
+        { en: `How do you use the word '${word.trim()}'?`, pt: `Como você usa a palavra '${word.trim()}'?` },
+        { en: `Please insert your API Keys in the settings gear.`, pt: `Por favor, insira suas chaves de API na engrenagem de configurações.` },
+        { en: `Practice makes perfect. Keep studying!`, pt: `A prática leva à perfeição. Continue estudando!` }
+      ],
+      level: "A1",
+      timestamp: Date.now()
+    };
+  };
+
   // Perform translation lookups, calling express server-side Gemini 3.5 API
   const handleWordLookup = async (word: string, context: string = "") => {
     if (!word || word.trim().length === 0) return;
@@ -322,8 +539,23 @@ export default function App() {
       setRightTab("vocabulary");
 
     } catch (err: any) {
-      console.error(err);
-      setTranslationError(err.message || "Não foi possível carregar a tradução com IA.");
+      console.warn("[App] Servidor indisponível ou falha de conexão. Traduzindo diretamente via chaves manuais do usuário...");
+      try {
+        const translationData = await translateDirectlyOnClient(queryKey, context);
+        translationData.timestamp = Date.now();
+
+        const updatedCache = { ...translationCache, [queryKey]: translationData };
+        setTranslationCache(updatedCache);
+        localStorage.setItem("english_translation_cache", JSON.stringify(updatedCache));
+
+        setActiveTranslation(translationData);
+        incrementWordCounter(queryKey, translationData);
+        logActivityAction("translated");
+        setRightTab("vocabulary");
+      } catch (localErr: any) {
+        console.error(localErr);
+        setTranslationError(localErr.message || "Não foi possível carregar a tradução com IA.");
+      }
     } finally {
       setIsTranslating(false);
     }
@@ -371,9 +603,22 @@ export default function App() {
       setChallengeTranslation(translationData);
       incrementWordCounter(queryKey, translationData);
     } catch (err) {
-      console.error(err);
-      alert("Não foi possível carregar o significado desta palavra via IA.");
-      setChallengeStep("select");
+      console.warn("[App] Servidor indisponível para enigma. Traduzindo diretamente via chaves manuais do usuário...");
+      try {
+        const translationData = await translateDirectlyOnClient(queryKey);
+        translationData.timestamp = Date.now();
+
+        const updatedCache = { ...translationCache, [queryKey]: translationData };
+        setTranslationCache(updatedCache);
+        localStorage.setItem("english_translation_cache", JSON.stringify(updatedCache));
+
+        setChallengeTranslation(translationData);
+        incrementWordCounter(queryKey, translationData);
+      } catch (localErr) {
+        console.error(localErr);
+        alert("Não foi possível carregar o significado desta palavra via IA.");
+        setChallengeStep("select");
+      }
     } finally {
       setChallengeLoading(false);
     }
@@ -1854,42 +2099,72 @@ export default function App() {
                 </button>
               </div>
 
-              <div className="p-6 space-y-4">
-                <div className="space-y-1.5">
-                  <span className="flex items-center gap-1.5 text-xs font-bold text-slate-350">
-                    <Key className="w-3.5 h-3.5 text-amber-500" />
-                    Chave de API do Gemini (Opcional)
-                  </span>
-                  <p className="text-xs text-slate-400 leading-relaxed">
-                    Sua chave é armazenada localmente de forma privada no seu navegador de maneira segura e serve para turbinar as traduções e explicações didáticas personalizadas via IA de forma direta.
-                  </p>
-                </div>
+              <div className="p-6 space-y-5 overflow-y-auto max-h-[70vh]">
+                {/* Gemini Section */}
+                <div className="space-y-3">
+                  <div className="space-y-1">
+                    <span className="flex items-center gap-1.5 text-xs font-bold text-slate-350">
+                      <Key className="w-3.5 h-3.5 text-amber-500" />
+                      Chave de API do Gemini (Opcional)
+                    </span>
+                    <p className="text-[11px] text-slate-400 leading-normal">
+                      Sua chave pessoal para tradução ultra rápida via Google Gemini, armazenada localmente de forma privada de maneira 100% segura.
+                    </p>
+                  </div>
 
-                <div className="space-y-2">
                   <div className="relative">
                     <input
                       type="password"
                       value={geminiApiKey}
                       onChange={(e) => setGeminiApiKey(e.target.value)}
                       placeholder="AIzaSy..."
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2.5 px-4 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-indigo-500 transition"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-indigo-500 transition"
                     />
                   </div>
+                </div>
 
-                  <p className="text-[10px] text-slate-500 flex items-center gap-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-sky-500 animate-pulse" />
-                    Se deixado vazio, utilizaremos nosso provedor inteligente de contingência integrado.
-                  </p>
+                {/* OpenRouter Section */}
+                <div className="space-y-3 pt-2 border-t border-slate-800/80">
+                  <div className="space-y-1">
+                    <span className="flex items-center gap-1.5 text-xs font-bold text-slate-350">
+                      <Key className="w-3.5 h-3.5 text-rose-500" />
+                      Chave de API do OpenRouter (Opcional - Contingência)
+                    </span>
+                    <p className="text-[11px] text-slate-400 leading-normal">
+                      Chave reserva de contingência utilizada automaticamente caso os serviços do Gemini apresentem limites de cota ou instabilidade.
+                    </p>
+                  </div>
+
+                  <div className="relative">
+                    <input
+                      type="password"
+                      value={openRouterApiKey}
+                      onChange={(e) => setOpenRouterApiKey(e.target.value)}
+                      placeholder="sk-or-v1-..."
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-indigo-500 transition"
+                    />
+                  </div>
+                </div>
+
+                <div className="p-2.5 bg-slate-950/60 border border-slate-850 rounded-xl text-[10px] text-slate-400 flex items-start gap-1.5 leading-relaxed">
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse mt-0.5 flex-shrink-0" />
+                  <span>
+                    As chaves configuradas acima operam diretamente do seu navegador de forma privada em chamadas cruzadas e seguras.
+                  </span>
                 </div>
               </div>
 
               <div className="px-6 py-3.5 bg-slate-950/50 border-t border-slate-800 flex justify-end gap-2">
                 <button
                   onClick={() => {
-                    const cleanKey = geminiApiKey.trim();
-                    setGeminiApiKey(cleanKey);
-                    localStorage.setItem("english_gemini_api_key", cleanKey);
+                    const cleanGeminiKey = geminiApiKey.trim();
+                    const cleanOpenRouterKey = openRouterApiKey.trim();
+                    setGeminiApiKey(cleanGeminiKey);
+                    setOpenRouterApiKey(cleanOpenRouterKey);
+                    localStorage.setItem("english_gemini_api_key", cleanGeminiKey);
+                    localStorage.setItem("english_openrouter_api_key", cleanOpenRouterKey);
                     setShowSettingsModal(false);
+                    alert("Chaves de API atualizadas com sucesso!");
                   }}
                   className="px-4 py-2 bg-indigo-600 hover:bg-indigo-505 text-white font-bold text-xs rounded-xl transition cursor-pointer"
                 >
