@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>My Google AI Studio App</title>
+    <script>
+      // Workaround for sandboxed iframes and extensions attempting to redefine window.fetch
+      (function() {
+        try {
+          var nativeFetch = window.fetch;
+          Object.defineProperty(window, 'fetch', {
+            get: function() {
+              return nativeFetch;
+            },
+            set: function(val) {
+              console.warn('Attempted to overwrite read-only window.fetch. Overwrite was bypassed to maintain iframe stability.');
+            },
+            configurable: true,
+            enumerable: true
+          });
+        } catch (e) {
+          console.error('Safe fetch defineProperty helper failed:', e);
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+

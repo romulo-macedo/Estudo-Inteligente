@@ -1,0 +1,6 @@
+{
+  "name": "Anotações e Leitor de Inglês",
+  "description": "Aplicativo focado em tablet com tela dividida para assistir vídeos e ler artigos, fazendo anotações em inglês com tradutor nativo via LLM, flashcards e indicadores.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
