@@ -4,7 +4,10 @@
  */
 
 import React, { useState } from "react";
-import { BookOpen, Sparkles, FileText, Upload, PlusCircle, Check, Info } from "lucide-react";
+import { 
+  BookOpen, Sparkles, FileText, Upload, PlusCircle, Check, Info, 
+  Rss, Search, Loader2, RefreshCw, ChevronLeft, AlertCircle, Newspaper 
+} from "lucide-react";
 import { PresetArticle } from "../types";
 
 interface ArticleReaderProps {
@@ -40,13 +43,117 @@ export default function ArticleReader({ onWordLookup, activeLookupWord }: Articl
   const [selectedArticleId, setSelectedArticleId] = useState<string>("art-1");
   const [userPastedText, setUserPastedText] = useState("");
   const [customArticles, setCustomArticles] = useState<PresetArticle[]>([]);
-  const [activeTab, setActiveTab] = useState<"preset" | "paste">("preset");
+  const [activeTab, setActiveTab] = useState<"preset" | "paste" | "rss">("preset");
+
+  // RSS States
+  const [rssFeedSource, setRssFeedSource] = useState<string>("bbc");
+  const [rssCustomUrl, setRssCustomUrl] = useState<string>("");
+  const [rssNews, setRssNews] = useState<any>(null);
+  const [selectedRssNewsItem, setSelectedRssNewsItem] = useState<any>(null);
+  const [rssLoading, setRssLoading] = useState<boolean>(false);
+  const [rssError, setRssError] = useState<string | null>(null);
+  const [rssFilterText, setRssFilterText] = useState<string>("");
+
+  const fetchRssNews = async (sourceKey: string, customUrl?: string) => {
+    setRssLoading(true);
+    setRssError(null);
+    try {
+      let queryUrl = `/api/rss-news?feed=${sourceKey}`;
+      if (sourceKey === "custom") {
+        if (!customUrl || !customUrl.trim().startsWith("http")) {
+          setRssError("Por favor, digite uma URL válida com http:// ou https://");
+          setRssLoading(false);
+          return;
+        }
+        queryUrl += `&url=${encodeURIComponent(customUrl.trim())}`;
+      }
+      const response = await fetch(queryUrl);
+      if (!response.ok) {
+        throw new Error("Não foi possível carregar as notícias desse Feed RSS.");
+      }
+      const data = await response.json();
+      setRssNews(data);
+    } catch (err: any) {
+      console.error(err);
+      setRssError(err.message || "Erro de conexão ao carregar o feed RSS.");
+    } finally {
+      setRssLoading(false);
+    }
+  };
+
+  // Run automatically when tab changes or feed source changes (except custom)
+  React.useEffect(() => {
+    if (activeTab === "rss" && rssFeedSource !== "custom") {
+      fetchRssNews(rssFeedSource);
+    }
+  }, [activeTab, rssFeedSource]);
+
+  // Fetch real-time webpage full article content for authentic educational reading
+  const [enrichedContentMap, setEnrichedContentMap] = useState<Record<string, string>>({});
+  const [isEnriching, setIsEnriching] = useState<boolean>(false);
+  const [enrichingError, setEnrichingError] = useState<string | null>(null);
+
+  React.useEffect(() => {
+    if (activeTab === "rss" && selectedRssNewsItem) {
+      const id = selectedRssNewsItem.id;
+      // If we already have the complete news, don't fetch again
+      if (enrichedContentMap[id]) {
+        setEnrichingError(null);
+        return;
+      }
+
+      const fetchFullArticle = async () => {
+        setIsEnriching(true);
+        setEnrichingError(null);
+        try {
+          // Pass the real direct link so backend can fetch and extract real news paragraphs
+          const response = await fetch(
+            `/api/rss-enrich?title=${encodeURIComponent(selectedRssNewsItem.title)}&summary=${encodeURIComponent(selectedRssNewsItem.content || "")}&link=${encodeURIComponent(selectedRssNewsItem.link || "")}`
+          );
+          if (!response.ok) {
+            throw new Error("Não foi possível carregar a notícia real completa.");
+          }
+          const result = await response.json();
+          if (result && result.content) {
+            setEnrichedContentMap(prev => ({
+              ...prev,
+              [id]: result.content
+            }));
+          } else {
+            throw new Error("Sem conteúdo retornado pelo servidor.");
+          }
+        } catch (err: any) {
+          console.warn("[RSS-Web] Ignorando falha de extração direta (usando fallback de resumo):", err.message || err);
+          setEnrichingError("Problema ao carregar texto integral: " + err.message);
+          // Auto fill with standard content snippet as fallback to avoid empty screens
+          setEnrichedContentMap(prev => ({
+            ...prev,
+            [id]: selectedRssNewsItem.content || selectedRssNewsItem.fullContent || "Nenhum conteúdo pôde ser carregado para esta notícia."
+          }));
+        } finally {
+          setIsEnriching(false);
+        }
+      };
+
+      fetchFullArticle();
+    }
+  }, [selectedRssNewsItem, activeTab]);
 
   // Get current active article content
   const activeArticle =
     activeTab === "preset"
       ? PRESET_ARTICLES.find((a) => a.id === selectedArticleId)
-      : customArticles[customArticles.length - 1];
+      : activeTab === "paste"
+      ? (customArticles.length > 0 ? customArticles[customArticles.length - 1] : null)
+      : selectedRssNewsItem
+      ? {
+          id: selectedRssNewsItem.id,
+          title: selectedRssNewsItem.title,
+          level: "Notícia Real Completa",
+          category: rssNews?.title || "Notícias em Tempo Real",
+          content: enrichedContentMap[selectedRssNewsItem.id] || selectedRssNewsItem.content || selectedRssNewsItem.fullContent || ""
+        }
+      : null;
 
   const handleImportText = (e: React.FormEvent) => {
     e.preventDefault();
@@ -114,12 +221,21 @@ export default function ArticleReader({ onWordLookup, activeLookupWord }: Articl
     });
   };
 
+  const filteredRssItems = rssNews?.items?.filter((item: any) => {
+    if (!rssFilterText.trim()) return true;
+    const search = rssFilterText.toLowerCase();
+    return (
+      item.title?.toLowerCase().includes(search) ||
+      item.content?.toLowerCase().includes(search)
+    );
+  }) || [];
+
   return (
     <div className="flex flex-col h-full bg-slate-50 dark:bg-slate-900 p-4 overflow-y-auto">
       {/* Header */}
       <div className="flex items-center justify-between mb-4 flex-shrink-0">
         <div className="flex items-center gap-2.5">
-          <div className="p-2.5 bg-emerald-100 text-emerald-600 rounded-xl">
+          <div className="p-2.5 bg-emerald-100 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400 rounded-xl">
             <BookOpen className="w-6 h-6" />
           </div>
           <div>
@@ -130,24 +246,35 @@ export default function ArticleReader({ onWordLookup, activeLookupWord }: Articl
       </div>
 
       {/* Tabs */}
-      <div className="flex bg-slate-200/60 dark:bg-slate-800/80 p-1 rounded-xl mb-4 text-xs font-semibold">
+      <div className="flex bg-slate-200/60 dark:bg-slate-800/80 p-1 rounded-xl mb-4 text-xs font-semibold select-none">
         <button
           onClick={() => setActiveTab("preset")}
-          className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg transition ${
+          className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-lg transition cursor-pointer ${
             activeTab === "preset"
               ? "bg-white text-slate-800 dark:bg-slate-700 dark:text-slate-100 shadow-xs"
-              : "text-slate-500 dark:text-slate-400 hover:text-slate-700"
+              : "text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
           }`}
         >
           <BookOpen className="w-3.5 h-3.5" />
           Artigos Recomendados
         </button>
         <button
+          onClick={() => setActiveTab("rss")}
+          className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-lg transition cursor-pointer ${
+            activeTab === "rss"
+              ? "bg-white text-slate-800 dark:bg-slate-700 dark:text-slate-100 shadow-xs"
+              : "text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+          }`}
+        >
+          <Rss className="w-3.5 h-3.5 text-amber-500 animate-pulse" />
+          Feeds de Notícias (RSS)
+        </button>
+        <button
           onClick={() => setActiveTab("paste")}
-          className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg transition ${
+          className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-lg transition cursor-pointer ${
             activeTab === "paste"
               ? "bg-white text-slate-800 dark:bg-slate-700 dark:text-slate-100 shadow-xs"
-              : "text-slate-500 dark:text-slate-400 hover:text-slate-700"
+              : "text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
           }`}
         >
           <Upload className="w-3.5 h-3.5" />
@@ -174,12 +301,163 @@ export default function ArticleReader({ onWordLookup, activeLookupWord }: Articl
           <button
             type="submit"
             disabled={userPastedText.trim().split(/\s+/).length < 2}
-            className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:hover:bg-indigo-600 transition text-white font-semibold text-sm rounded-xl flex items-center justify-center gap-2"
+            className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:hover:bg-indigo-600 transition text-white font-semibold text-sm rounded-xl flex items-center justify-center gap-2 cursor-pointer"
           >
             <PlusCircle className="w-4.5 h-4.5" />
             Ativar Texto Interativo
           </button>
         </form>
+      )}
+
+      {/* RSS Selection & Feed list section */}
+      {activeTab === "rss" && !activeArticle && (
+        <div className="flex-1 flex flex-col gap-4 mb-4">
+          
+          {/* Feed source selection pills */}
+          <div className="flex flex-wrap gap-1.5 p-2 bg-slate-100 dark:bg-slate-850 rounded-xl">
+            {[
+              { id: "bbc", name: "BBC News", icon: "🇬🇧" },
+              { id: "nyt", name: "NY Times", icon: "🇺🇸" },
+              { id: "npr", name: "NPR News", icon: "🎙️" },
+              { id: "techcrunch", name: "TechCrunch", icon: "⚡" },
+              { id: "nasa", name: "NASA Breaking", icon: "🚀" },
+              { id: "custom", name: "+ Feed Customizado", icon: "🔗" }
+            ].map((feed) => (
+              <button
+                key={feed.id}
+                onClick={() => setRssFeedSource(feed.id)}
+                className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition cursor-pointer flex items-center gap-1.5 ${
+                  rssFeedSource === feed.id
+                    ? "bg-white dark:bg-slate-755 text-indigo-600 dark:text-indigo-400 shadow-xs font-bold border border-slate-205 dark:border-slate-705"
+                    : "text-slate-600 dark:text-slate-300 hover:bg-white/40 dark:hover:bg-slate-800"
+                }`}
+              >
+                <span>{feed.icon}</span>
+                <span>{feed.name}</span>
+              </button>
+            ))}
+          </div>
+
+          {/* Custom Feed url input drawer */}
+          {rssFeedSource === "custom" && (
+            <div className="p-4 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl space-y-2.5">
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block font-mono">Digitar Link de Feed RSS de Notícias</span>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  placeholder="https://exemplo.com/feed.xml"
+                  value={rssCustomUrl}
+                  onChange={(e) => setRssCustomUrl(e.target.value)}
+                  className="flex-1 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                />
+                <button
+                  type="button"
+                  onClick={() => fetchRssNews("custom", rssCustomUrl)}
+                  className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-550 text-white font-bold text-xs rounded-lg transition cursor-pointer"
+                >
+                  Carregar
+                </button>
+              </div>
+              <p className="text-[10px] text-slate-500 leading-normal">
+                Nota: Forneça um feed de notícias em inglês. O servidor processará e entregará o conteúdo para que você aprenda clicando nos termos.
+              </p>
+            </div>
+          )}
+
+          {/* News items filter, text count and Reload trigger */}
+          {rssNews && !rssLoading && (
+            <div className="flex gap-2 items-center">
+              <div className="relative flex-1">
+                <span className="absolute inset-y-0 left-0 flex items-center pl-3">
+                  <Search className="w-4 h-4 text-slate-400" />
+                </span>
+                <input
+                  type="text"
+                  placeholder="Filtrar por palavras-chave em inglês..."
+                  value={rssFilterText}
+                  onChange={(e) => setRssFilterText(e.target.value)}
+                  className="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl pl-9 pr-4 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500 text-slate-800 dark:text-slate-100 placeholder-slate-400"
+                />
+              </div>
+              <button
+                onClick={() => fetchRssNews(rssFeedSource, rssCustomUrl)}
+                className="p-2 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-750 border border-slate-200 dark:border-slate-700 rounded-xl transition text-slate-600 dark:text-slate-300 cursor-pointer"
+                title="Recarregar Feed de Notícias"
+              >
+                <RefreshCw className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
+          {/* News Items Stack container */}
+          <div className="flex-1 min-h-[250px] relative">
+            {rssLoading ? (
+              <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-400">
+                <Loader2 className="w-8 h-8 text-indigo-500 animate-spin mb-2" />
+                <p className="text-xs font-semibold">Buscando notícias frescas em inglês...</p>
+                <p className="text-[10px] text-slate-500">Isso é puxado diretamente do feed RSS de forma segura.</p>
+              </div>
+            ) : rssError ? (
+              <div className="p-4 bg-red-50 dark:bg-red-950/20 border border-red-150 dark:border-red-900 rounded-2xl text-red-750 dark:text-red-300 text-xs flex gap-2.5 items-start">
+                <AlertCircle className="w-4 h-4 flex-shrink-0 text-red-500" />
+                <div>
+                  <h4 className="font-bold">Ocorreu um problema ao carregar</h4>
+                  <p className="mt-1 leading-normal">{rssError}</p>
+                  <button
+                    onClick={() => fetchRssNews(rssFeedSource, rssCustomUrl)}
+                    className="mt-2 text-[10px] font-bold underline text-indigo-600 dark:text-indigo-400 cursor-pointer"
+                  >
+                    Tentar Novamente
+                  </button>
+                </div>
+              </div>
+            ) : rssNews ? (
+              <div className="space-y-2.5 max-h-[500px] overflow-y-auto pr-1">
+                <div className="text-[10px] uppercase font-bold text-slate-400 tracking-widest pl-1 font-mono">
+                  {rssNews.title} • {filteredRssItems.length} {filteredRssItems.length === 1 ? 'notícia' : 'notícias'} encontradas
+                </div>
+                
+                {filteredRssItems.length === 0 ? (
+                  <div className="text-center py-12 text-slate-400 text-xs">
+                    Nenhuma notícia atendeu à palavra-chave buscada.
+                  </div>
+                ) : (
+                  filteredRssItems.map((item: any) => (
+                    <div
+                      key={item.id}
+                      onClick={() => setSelectedRssNewsItem(item)}
+                      className="p-3.5 bg-white dark:bg-slate-800 border border-slate-200/55 dark:border-slate-800 rounded-xl hover:shadow-xs hover:border-indigo-500/40 cursor-pointer transition flex flex-col gap-1.5"
+                    >
+                      <div className="flex justify-between items-start gap-2">
+                        <h4 className="text-sm font-bold text-slate-800 dark:text-slate-100 hover:text-indigo-650 dark:hover:text-indigo-400 leading-snug transition line-clamp-2">
+                          {item.title}
+                        </h4>
+                      </div>
+                      
+                      {item.content && (
+                        <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 line-clamp-2 leading-relaxed">
+                          {item.content}
+                        </p>
+                      )}
+
+                      <div className="flex items-center justify-between text-[10px] text-slate-400 pt-1 mt-1 border-t border-slate-100/50 dark:border-slate-700/50 font-mono">
+                        <span>{item.creator} • {item.pubDate ? new Date(item.pubDate).toLocaleString("pt-BR", {hour: "2-digit", minute:"2-digit", day:"numeric", month:"short"}) : "Hoje"}</span>
+                        <span className="text-[10px] font-bold text-indigo-500 dark:text-indigo-400 flex items-center gap-1">
+                          Estudar Notícia <ChevronLeft className="w-3.5 h-3.5 rotate-180" />
+                        </span>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            ) : (
+              <div className="text-center py-12 text-slate-400 text-xs flex flex-col items-center justify-center gap-2">
+                <Newspaper className="w-8 h-8 text-slate-350" />
+                <p>Abra o Feed RSS de Notícias de sua preferência acima para carregar artigos reais em tempo real!</p>
+              </div>
+            )}
+          </div>
+        </div>
       )}
 
       {/* Article selectors when Preset is active */}
@@ -189,7 +467,7 @@ export default function ArticleReader({ onWordLookup, activeLookupWord }: Articl
             <button
               key={art.id}
               onClick={() => setSelectedArticleId(art.id)}
-              className={`flex-shrink-0 px-3.5 py-2.5 rounded-xl text-left border transition ${
+              className={`flex-shrink-0 px-3.5 py-2.5 rounded-xl text-left border transition cursor-pointer ${
                 selectedArticleId === art.id
                   ? "bg-emerald-50/80 border-emerald-300 dark:bg-emerald-950/20 dark:border-emerald-800"
                   : "bg-white border-slate-200 hover:bg-slate-100/50 dark:bg-slate-800 dark:border-slate-800"
@@ -216,32 +494,65 @@ export default function ArticleReader({ onWordLookup, activeLookupWord }: Articl
       {/* Active Article Viewer */}
       {activeArticle ? (
         <div className="flex-1 flex flex-col bg-white dark:bg-slate-800 rounded-2xl shadow-xs border border-slate-200/60 dark:border-slate-800 p-5 overflow-hidden">
-          <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-700/60 pb-3 mb-4 flex-shrink-0">
-            <div>
-              <span className="text-[10px] font-bold text-indigo-500 uppercase tracking-widest">{activeArticle.category}</span>
-              <h3 className="text-lg font-bold text-slate-800 dark:text-slate-100 font-sans leading-tight mt-0.5">{activeArticle.title}</h3>
+          <div className="flex items-center justify-between border-b border-slate-105 dark:border-slate-700/60 pb-3 mb-4 flex-shrink-0">
+            <div className="min-w-0 flex-1">
+              <span className="text-[10px] font-bold text-indigo-500 uppercase tracking-widest block truncate">{activeArticle.category}</span>
+              <h3 className="text-base sm:text-lg font-bold text-slate-800 dark:text-slate-100 font-sans leading-snug mt-0.5 truncate">{activeArticle.title}</h3>
             </div>
-            {activeTab === "paste" && (
-              <button
-                onClick={() => setCustomArticles([])}
-                className="text-xs text-red-500 hover:text-red-600 font-semibold flex items-center gap-1"
-              >
-                Limpar Texto
-              </button>
-            )}
+            <div className="flex-shrink-0 pl-2">
+              {activeTab === "paste" && (
+                <button
+                  onClick={() => setCustomArticles([])}
+                  className="text-xs text-red-500 hover:text-red-650 font-semibold flex items-center gap-1 cursor-pointer"
+                >
+                  Limpar Texto
+                </button>
+              )}
+              {activeTab === "rss" && (
+                <button
+                  onClick={() => setSelectedRssNewsItem(null)}
+                  className="text-xs bg-slate-100 hover:bg-slate-200 dark:bg-slate-705 dark:hover:bg-slate-650 text-indigo-600 dark:text-indigo-400 font-extrabold px-3 py-1.5 rounded-lg flex items-center gap-1 transition cursor-pointer border border-slate-200 dark:border-slate-605"
+                >
+                  <ChevronLeft className="w-3.5 h-3.5" />
+                  Voltar
+                </button>
+              )}
+            </div>
           </div>
 
           <div className="flex-1 overflow-y-auto pr-1">
-            {renderInteractiveText(activeArticle.content)}
+            {isEnriching ? (
+              <div className="flex flex-col items-center justify-center p-8 py-16 text-center space-y-4">
+                <Loader2 className="w-10 h-10 text-indigo-500 animate-spin" />
+                <div>
+                  <p className="text-sm font-bold text-slate-850 dark:text-slate-150">
+                    Buscando Notícia Completa Real...
+                  </p>
+                  <p className="text-xs text-slate-400 dark:text-slate-500 mt-1.5 max-w-sm mx-auto leading-relaxed">
+                    Acessando de forma direta e segura o portal original de notícias para extrair todos os parágrafos reais da cobertura original do artigo, sem uso de inteligência artificial.
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <>
+                {enrichingError && (
+                  <div className="mb-3.5 p-2 px-3 bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/60 text-amber-700 dark:text-amber-400 rounded-xl text-[11px] flex items-center gap-1.5 font-sans">
+                    <Info className="w-3.5 h-3.5 flex-shrink-0 text-amber-500" />
+                    <span>{enrichingError}. Exibindo resumo do Feed RSS original.</span>
+                  </div>
+                )}
+                {renderInteractiveText(activeArticle.content)}
+              </>
+            )}
           </div>
 
-          <div className="mt-4 pt-3 border-t border-slate-100 dark:border-slate-700/60 flex items-center gap-1.5 text-[11px] text-slate-400">
+          <div className="mt-4 pt-3 border-t border-slate-100 dark:border-slate-700/60 flex items-center gap-1.5 text-[11px] text-slate-400 select-none">
             <Info className="w-3.5 h-3.5 text-slate-400 flex-shrink-0" />
             <span>Toque em qualquer palavra para ver sua tradução inteligente e salvá-la em suas anotações.</span>
           </div>
         </div>
       ) : activeTab === "preset" ? (
-        <div className="flex-1 flex flex-col items-center justify-center p-12 text-slate-400">
+        <div className="flex-1 flex flex-col items-center justify-center p-12 text-slate-400 select-none">
           <p>Nenhum artigo selecionado</p>
         </div>
       ) : null}

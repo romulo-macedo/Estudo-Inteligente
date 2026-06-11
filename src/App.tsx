@@ -82,7 +82,19 @@ export default function App() {
   const [challengeUserGuess, setChallengeUserGuess] = useState<string>("");
   const [challengeFeedback, setChallengeFeedback] = useState<"correct" | "incorrect" | null>(null);
 
-  // Load state from client localStorage on mount
+  const saveStateToSQLite = async (key: string, value: any) => {
+    try {
+      await fetch("/api/app-state", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key, value })
+      });
+    } catch (err) {
+      console.error("Erro ao sincronizar estado com SQLite:", err);
+    }
+  };
+
+  // Load state from client SQLite, fallback to localStorage on mount
   useEffect(() => {
     // Load custom Gemini API Key
     const savedApiKey = localStorage.getItem("english_gemini_api_key");
@@ -90,69 +102,117 @@ export default function App() {
       setGeminiApiKey(savedApiKey);
     }
 
-    // 1. Translation cache loading
-    const savedCache = localStorage.getItem("english_translation_cache");
-    if (savedCache) {
+    const loadStateFromSQLite = async () => {
       try {
-        setTranslationCache(JSON.parse(savedCache));
-      } catch (e) {
-        console.error("Erro ao carregar cache de traduções:", e);
-      }
-    }
+        const response = await fetch("/api/app-state");
+        if (response.ok) {
+          const state = await response.json();
+          
+          if (state.english_translation_cache) {
+            setTranslationCache(state.english_translation_cache);
+          } else {
+            const savedCache = localStorage.getItem("english_translation_cache");
+            if (savedCache) {
+              setTranslationCache(JSON.parse(savedCache));
+              saveStateToSQLite("english_translation_cache", JSON.parse(savedCache));
+            }
+          }
 
-    // 2. Priority words loading
-    const savedWords = localStorage.getItem("english_priority_words");
-    if (savedWords) {
-      try {
-        setPriorityWords(JSON.parse(savedWords));
-      } catch (e) {
-        console.error("Erro ao carregar palavras de prioridade:", e);
-      }
-    }
+          if (state.english_priority_words) {
+            setPriorityWords(state.english_priority_words);
+          } else {
+            const savedWords = localStorage.getItem("english_priority_words");
+            if (savedWords) {
+              setPriorityWords(JSON.parse(savedWords));
+              saveStateToSQLite("english_priority_words", JSON.parse(savedWords));
+            }
+          }
 
-    // 3. Flashcards loading
-    const savedCards = localStorage.getItem("english_flashcards");
-    if (savedCards) {
-      try {
-        setFlashcards(JSON.parse(savedCards));
-      } catch (e) {
-        console.error("Erro ao carregar flashcards:", e);
-      }
-    }
+          if (state.english_flashcards) {
+            setFlashcards(state.english_flashcards);
+          } else {
+            const savedCards = localStorage.getItem("english_flashcards");
+            if (savedCards) {
+              setFlashcards(JSON.parse(savedCards));
+              saveStateToSQLite("english_flashcards", JSON.parse(savedCards));
+            }
+          }
 
-    // 4. Daily activity metrics loading
-    const savedMetrics = localStorage.getItem("english_daily_metrics");
-    const todayStr = new Date().toISOString().split("T")[0];
-    if (savedMetrics) {
-      try {
-        const parsed: DailyActivity[] = JSON.parse(savedMetrics);
-        // Find if today already exists, otherwise add initial
-        const existingToday = parsed.find((m) => m.date === todayStr);
-        if (!existingToday) {
-          parsed.push({
-            date: todayStr,
-            translatedCount: 0,
-            drawCount: 0,
-            flashcardsPracticed: 0,
-            activeSeconds: 0
-          });
+          const todayStr = new Date().toISOString().split("T")[0];
+          if (state.english_daily_metrics) {
+            const parsed = state.english_daily_metrics;
+            const existingToday = parsed.find((m: any) => m.date === todayStr);
+            if (!existingToday) {
+              parsed.push({
+                date: todayStr,
+                translatedCount: 0,
+                drawCount: 0,
+                flashcardsPracticed: 0,
+                activeSeconds: 0
+              });
+            }
+            setActivityMetrics(parsed);
+          } else {
+            const savedMetrics = localStorage.getItem("english_daily_metrics");
+            if (savedMetrics) {
+              const parsed = JSON.parse(savedMetrics);
+              const existingToday = parsed.find((m: any) => m.date === todayStr);
+              if (!existingToday) {
+                parsed.push({
+                  date: todayStr,
+                  translatedCount: 0,
+                  drawCount: 0,
+                  flashcardsPracticed: 0,
+                  activeSeconds: 0
+                });
+              }
+              setActivityMetrics(parsed);
+              saveStateToSQLite("english_daily_metrics", parsed);
+            } else {
+              const initialMetrics = [
+                { date: "2026-06-08", translatedCount: 8, drawCount: 4, flashcardsPracticed: 12, activeSeconds: 1540 },
+                { date: "2026-06-09", translatedCount: 15, drawCount: 9, flashcardsPracticed: 18, activeSeconds: 2600 },
+                { date: "2026-06-10", translatedCount: 11, drawCount: 6, flashcardsPracticed: 10, activeSeconds: 1980 },
+                { date: todayStr, translatedCount: 0, drawCount: 0, flashcardsPracticed: 0, activeSeconds: 0 }
+              ];
+              setActivityMetrics(initialMetrics);
+              saveStateToSQLite("english_daily_metrics", initialMetrics);
+            }
+          }
         }
-        setActivityMetrics(parsed);
-      } catch (e) {
-        console.error("Erro ao carregar métricas de atividade:", e);
+      } catch (err) {
+        console.error("Erro ao carregar estados do banco SQLite:", err);
       }
-    } else {
-      const initialMetrics: DailyActivity[] = [
-        // Seeding some historic demo days representational structure for the performance dashboard
-        { date: "2026-06-08", translatedCount: 8, drawCount: 4, flashcardsPracticed: 12, activeSeconds: 1540 },
-        { date: "2026-06-09", translatedCount: 15, drawCount: 9, flashcardsPracticed: 18, activeSeconds: 2600 },
-        { date: "2026-06-10", translatedCount: 11, drawCount: 6, flashcardsPracticed: 10, activeSeconds: 1980 },
-        { date: todayStr, translatedCount: 0, drawCount: 0, flashcardsPracticed: 0, activeSeconds: 0 }
-      ];
-      setActivityMetrics(initialMetrics);
-      localStorage.setItem("english_daily_metrics", JSON.stringify(initialMetrics));
-    }
+    };
+
+    loadStateFromSQLite();
   }, []);
+
+  // Background auto-syncs for states
+  useEffect(() => {
+    if (Object.keys(translationCache).length > 0) {
+      saveStateToSQLite("english_translation_cache", translationCache);
+    }
+  }, [translationCache]);
+
+  useEffect(() => {
+    if (priorityWords.length > 0) {
+      saveStateToSQLite("english_priority_words", priorityWords);
+    }
+  }, [priorityWords]);
+
+  useEffect(() => {
+    if (flashcards.length > 0) {
+      saveStateToSQLite("english_flashcards", flashcards);
+    }
+  }, [flashcards]);
+
+  useEffect(() => {
+    if (activityMetrics.length > 0) {
+      saveStateToSQLite("english_daily_metrics", activityMetrics);
+    }
+  }, [activityMetrics]);
+
 
   // Timer simulation to track duration minutes of tablet study Session
   useEffect(() => {

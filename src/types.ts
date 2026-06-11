@@ -62,3 +62,22 @@ export interface DailyActivity {
   flashcardsPracticed: number;
   activeSeconds: number;
 }
+
+export interface Notebook {
+  id: string;
+  name: string;
+  color: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface StudyNote {
+  id: string;
+  notebookId: string;
+  title: string;
+  strokes: string; // JSON String or DrawingStroke[]
+  textNotes: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
