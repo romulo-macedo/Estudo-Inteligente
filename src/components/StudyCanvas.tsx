@@ -149,6 +149,16 @@ export default function StudyCanvas({ onActivityLogged }: StudyCanvasProps) {
 
   // 1. Fetch notebooks list from Server SQLite
   const fetchNotebooks = async (selectNotebookId?: string) => {
+    if ((window as any).IS_BACKEND_OFFLINE) {
+      const data = getLocalNotebooks();
+      setNotebooks(data);
+      if (data.length > 0) {
+        const targetId = selectNotebookId || data[0].id;
+        setActiveNotebookId(targetId);
+      }
+      return;
+    }
+
     try {
       const response = await fetch("/api/notebooks");
       if (response && response.ok) {
@@ -176,6 +186,29 @@ export default function StudyCanvas({ onActivityLogged }: StudyCanvasProps) {
 
   // 2. Fetch study pages (notes) of the active notebook
   const fetchNotes = async (notebookId: string, selectNoteId?: string) => {
+    if ((window as any).IS_BACKEND_OFFLINE) {
+      const data = getLocalNotes(notebookId);
+      setNotes(data);
+      if (data.length > 0) {
+        const targetNoteId = selectNoteId || data[0].id;
+        setActiveNoteId(targetNoteId);
+        const activePage = data.find(n => n.id === targetNoteId);
+        if (activePage) {
+          setActiveNoteTitle(activePage.title);
+          setTextNotes(activePage.textNotes || "");
+          try {
+            const decodedStrokes = typeof activePage.strokes === "string"
+              ? JSON.parse(activePage.strokes)
+              : activePage.strokes;
+            setStrokes(decodedStrokes || []);
+          } catch (pErr) {
+            setStrokes([]);
+          }
+        }
+      }
+      return;
+    }
+
     try {
       const response = await fetch(`/api/notebooks/${notebookId}/notes`);
       if (response && response.ok) {
@@ -243,6 +276,18 @@ export default function StudyCanvas({ onActivityLogged }: StudyCanvasProps) {
     };
     saveLocalNote(transientNote);
 
+    if ((window as any).IS_BACKEND_OFFLINE) {
+      if (notebookId === activeNotebookId) {
+        const data = getLocalNotes(notebookId);
+        setNotes(data);
+        setActiveNoteId(id);
+        setActiveNoteTitle(title);
+        setTextNotes("");
+        setStrokes([]);
+      }
+      return;
+    }
+
     try {
       const response = await fetch("/api/notes", {
         method: "POST",
@@ -292,6 +337,25 @@ export default function StudyCanvas({ onActivityLogged }: StudyCanvasProps) {
     };
     // Sync to local storage first for instant reliability
     saveLocalNote(transientNote);
+
+    if ((window as any).IS_BACKEND_OFFLINE) {
+      setIsSaved(true);
+      setTimeout(() => setIsSaved(false), 2000);
+      setIsSaving(false);
+      setNotes(prev => prev.map(n => {
+        if (n.id === noteIdToSave) {
+          return {
+            ...n,
+            title: activeNoteTitle,
+            strokes: JSON.stringify(strokesToSave),
+            textNotes: textNotesToSave,
+            updatedAt: Date.now()
+          };
+        }
+        return n;
+      }));
+      return;
+    }
 
     try {
       const response = await fetch("/api/notes", {
@@ -381,6 +445,15 @@ export default function StudyCanvas({ onActivityLogged }: StudyCanvasProps) {
     };
     saveLocalNotebook(newNb);
 
+    if ((window as any).IS_BACKEND_OFFLINE) {
+      setShowAddNotebook(false);
+      setNewNotebookName("");
+      const data = getLocalNotebooks();
+      setNotebooks(data);
+      setActiveNotebookId(id);
+      return;
+    }
+
     try {
       const response = await fetch("/api/notebooks", {
         method: "POST",
@@ -418,6 +491,15 @@ export default function StudyCanvas({ onActivityLogged }: StudyCanvasProps) {
     }
     if (window.confirm("Aviso de Segurança: Tem certeza de que deseja excluir este Caderno? Todos os desenhos de caneta e anotações dele serão apagados permanentemente.")) {
       deleteLocalNotebook(id);
+
+      if ((window as any).IS_BACKEND_OFFLINE) {
+        if (activeNotebookId === id) {
+          await fetchNotebooks();
+        } else {
+          setNotebooks(prev => prev.filter(nb => nb.id !== id));
+        }
+        return;
+      }
 
       try {
         const response = await fetch(`/api/notebooks/${id}`, { method: "DELETE" });
@@ -458,6 +540,18 @@ export default function StudyCanvas({ onActivityLogged }: StudyCanvasProps) {
       updatedAt: Date.now()
     };
     saveLocalNote(newNote);
+
+    if ((window as any).IS_BACKEND_OFFLINE) {
+      setShowAddNote(false);
+      setNewNoteTitle("");
+      const data = getLocalNotes(activeNotebookId);
+      setNotes(data);
+      setActiveNoteId(id);
+      setActiveNoteTitle(title);
+      setTextNotes("");
+      setStrokes([]);
+      return;
+    }
 
     try {
       const response = await fetch("/api/notes", {
@@ -502,6 +596,16 @@ export default function StudyCanvas({ onActivityLogged }: StudyCanvasProps) {
     if (window.confirm("Excluir Página: Deseja realmente remover essa folha do caderno com todos os seus riscos e digitações?")) {
       deleteLocalNote(noteId);
 
+      if ((window as any).IS_BACKEND_OFFLINE) {
+        if (activeNoteId === noteId) {
+          const nextActiveList = notes.filter(n => n.id !== noteId);
+          await handleSelectPage(nextActiveList[0].id);
+        } else {
+          setNotes(prev => prev.filter(n => n.id !== noteId));
+        }
+        return;
+      }
+
       try {
         const response = await fetch(`/api/notes/${noteId}`, { method: "DELETE" });
         if (response && response.ok) {
@@ -536,6 +640,15 @@ export default function StudyCanvas({ onActivityLogged }: StudyCanvasProps) {
         title: editingNoteTitle.trim()
       };
       saveLocalNote(updatedPage);
+
+      if ((window as any).IS_BACKEND_OFFLINE) {
+        if (activeNoteId === id) {
+          setActiveNoteTitle(editingNoteTitle.trim());
+        }
+        setNotes(prev => prev.map(n => n.id === id ? { ...n, title: editingNoteTitle.trim() } : n));
+        setEditingNoteId(null);
+        return;
+      }
 
       try {
         const response = await fetch("/api/notes", {

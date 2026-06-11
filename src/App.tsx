@@ -111,6 +111,9 @@ export default function App() {
   const [challengeFeedback, setChallengeFeedback] = useState<"correct" | "incorrect" | null>(null);
 
   const saveStateToSQLite = async (key: string, value: any) => {
+    if ((window as any).IS_BACKEND_OFFLINE) {
+      return;
+    }
     try {
       await fetch("/api/app-state", {
         method: "POST",
@@ -177,9 +180,18 @@ export default function App() {
     };
 
     const loadStateFromSQLite = async () => {
+      // Deteção inteligente preventiva do host Vercel estático para impedir requisições inválidas de gerarem log 404
+      const isVercel = window.location.hostname.includes("vercel.app") || window.location.hostname.includes("vercel");
+      if (isVercel) {
+        (window as any).IS_BACKEND_OFFLINE = true;
+        loadStateFromLocalStorageOnly();
+        return;
+      }
+
       try {
         const response = await fetch("/api/app-state");
         if (response && response.ok) {
+          (window as any).IS_BACKEND_OFFLINE = false;
           const state = await response.json();
           
           if (state.english_translation_cache) {
@@ -255,10 +267,12 @@ export default function App() {
           }
         } else {
           // Response not OK (like 404 on Vercel)
+          (window as any).IS_BACKEND_OFFLINE = true;
           loadStateFromLocalStorageOnly();
         }
       } catch (err) {
         console.warn("Erro ao carregar estados do banco SQLite. Usando contingência local:", err);
+        (window as any).IS_BACKEND_OFFLINE = true;
         loadStateFromLocalStorageOnly();
       }
     };
@@ -592,6 +606,30 @@ Você DEVE preencher todos os campos do formato JSON exigidos no esquema da resp
 
     // 3. Fetch from LLM Server-side API gateway proxy (with AI)
     setIsTranslating(true);
+    
+    if ((window as any).IS_BACKEND_OFFLINE) {
+      try {
+        const translationData = await translateDirectlyOnClient(queryKey, context);
+        translationData.timestamp = Date.now();
+
+        const updatedCache = { ...translationCache, [queryKey]: translationData };
+        setTranslationCache(updatedCache);
+        localStorage.setItem("english_translation_cache", JSON.stringify(updatedCache));
+        saveStateToSQLite("english_translation_cache", updatedCache);
+
+        setActiveTranslation(translationData);
+        incrementWordCounter(queryKey, translationData);
+        logActivityAction("translated");
+        setRightTab("vocabulary");
+      } catch (localErr: any) {
+        console.error(localErr);
+        setTranslationError(localErr.message || "Não foi possível carregar a tradução com IA.");
+      } finally {
+        setIsTranslating(false);
+      }
+      return;
+    }
+
     try {
       const response = await fetch("/api/translate", {
         method: "POST",
@@ -660,6 +698,27 @@ Você DEVE preencher todos os campos do formato JSON exigidos no esquema da resp
     if (translationCache[queryKey]) {
       setChallengeTranslation(translationCache[queryKey]);
       setChallengeLoading(false);
+      return;
+    }
+
+    if ((window as any).IS_BACKEND_OFFLINE) {
+      try {
+        const translationData = await translateDirectlyOnClient(queryKey);
+        translationData.timestamp = Date.now();
+
+        const updatedCache = { ...translationCache, [queryKey]: translationData };
+        setTranslationCache(updatedCache);
+        localStorage.setItem("english_translation_cache", JSON.stringify(updatedCache));
+
+        setChallengeTranslation(translationData);
+        incrementWordCounter(queryKey, translationData);
+      } catch (localErr) {
+        console.error(localErr);
+        alert("Não foi possível carregar o significado desta palavra via IA.");
+        setChallengeStep("select");
+      } finally {
+        setChallengeLoading(false);
+      }
       return;
     }
 
@@ -1251,6 +1310,19 @@ Você DEVE preencher todos os campos do formato JSON exigidos no esquema da resp
                         Traduzir sem IA 🔌
                       </button>
                     </div>
+
+                    {/* Vercel Static Warning when in AI translation mode without custom keys */}
+                    {translationMode === "ai" && (window as any).IS_BACKEND_OFFLINE && (!geminiApiKey || geminiApiKey.trim() === "" || geminiApiKey.startsWith("AIzaSyAlOOZvfwDv")) && (
+                      <div className="mb-4 p-2.5 bg-amber-500/10 border border-amber-500/20 rounded-xl text-[10px] text-amber-400 leading-relaxed">
+                        <div className="font-bold flex items-center gap-1 mb-1">
+                          <AlertTriangle className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                          Modo Offline (Hospedagem Estática Vercel)
+                        </div>
+                        <p>
+                          Como seu app está hospedado estaticamente, para traduzir com IA insira sua própria <strong>Chave Gemini</strong> na engrenagem (⚙️) acima, ou ative <strong>"Traduzir sem IA 🔌"</strong> para carregar traduções gratuitas!
+                        </p>
+                      </div>
+                    )}
 
                     {/* Manual word typing lookup */}
                     <div className="flex gap-1.5 mb-4">
