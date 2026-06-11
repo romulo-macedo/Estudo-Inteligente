@@ -33,7 +33,11 @@ import {
   Key,
   History,
   Eye,
-  EyeOff
+  EyeOff,
+  Pencil,
+  Globe,
+  Check,
+  X
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import YouTubeViewer from "./components/YouTubeViewer";
@@ -65,6 +69,29 @@ export default function App() {
   const [translationError, setTranslationError] = useState<string | null>(null);
 
   // Leitner SRS Flashcards State
+  const [translationMode, setTranslationMode] = useState<"ai" | "no_ai">(() => {
+    try {
+      const saved = localStorage.getItem("english_translation_mode");
+      return saved === "no_ai" ? "no_ai" : "ai";
+    } catch (e) {
+      return "ai";
+    }
+  });
+  const [isEditingTranslation, setIsEditingTranslation] = useState<boolean>(false);
+  const [editWord, setEditWord] = useState<string>("");
+  const [editTranslation, setEditTranslation] = useState<string>("");
+  const [editPhonetic, setEditPhonetic] = useState<string>("");
+  const [editPartOfSpeech, setEditPartOfSpeech] = useState<string>("");
+  const [editDefinition, setEditDefinition] = useState<string>("");
+  const [editExplanation, setEditExplanation] = useState<string>("");
+  const [editLevel, setEditLevel] = useState<string>("A1");
+  const [editExamples, setEditExamples] = useState<{ en: string; pt: string }[]>([
+    { en: "", pt: "" },
+    { en: "", pt: "" },
+    { en: "", pt: "" }
+  ]);
+  const [manualTranslateInput, setManualTranslateInput] = useState<string>("");
+
   const [flashcards, setFlashcards] = useState<Flashcard[]>([]);
   const [currentFlashcardIndex, setCurrentFlashcardIndex] = useState<number>(0);
   const [revealFlashcardAnswer, setRevealFlashcardAnswer] = useState<boolean>(false);
@@ -487,6 +514,23 @@ Você DEVE preencher todos os campos do formato JSON exigidos no esquema da resp
     };
   };
 
+  // Call free public translation API (MyMemory) for offline / No-AI mode
+  const translateWithMyMemory = async (word: string): Promise<string> => {
+    try {
+      const resp = await fetch(`https://api.mymemory.translated.net/get?q=${encodeURI(word)}&langpair=en|pt`);
+      if (resp.ok) {
+        const json = await resp.json();
+        const text = json?.responseData?.translatedText;
+        if (text) {
+          return text;
+        }
+      }
+    } catch (e) {
+      console.warn("Falha ao consultar MyMemory API:", e);
+    }
+    return word; // fallback if failed
+  };
+
   // Perform translation lookups, calling express server-side Gemini 3.5 API
   const handleWordLookup = async (word: string, context: string = "") => {
     if (!word || word.trim().length === 0) return;
@@ -507,7 +551,46 @@ Você DEVE preencher todos os campos do formato JSON exigidos no esquema da resp
       return;
     }
 
-    // 2. Fetch from LLM Server-side API gateway proxy
+    // 2. If translation mode is "no_ai" (Without AI), use MyMemory API and request manual input if desired
+    if (translationMode === "no_ai") {
+      setIsTranslating(true);
+      try {
+        const translatedText = await translateWithMyMemory(queryKey);
+        const noAiTranslation: Translation = {
+          word: word.trim(),
+          translation: translatedText,
+          phonetic: "/.../",
+          partOfSpeech: "Noun (Manual)",
+          definition: "English definition - click 'Editar' below to write manually.",
+          explanation: "Tradução realizada via API pública externa MyMemory (Sem IA). Você pode refinar as informações e exemplos manualmente clicando em 'Editar'.",
+          examples: [
+            { en: `This is a sentence containing '${word.trim()}'.`, pt: `Esta é uma frase contendo '${translatedText}'.` }
+          ],
+          level: "A1",
+          timestamp: Date.now()
+        };
+
+        const updatedCache = { ...translationCache, [queryKey]: noAiTranslation };
+        setTranslationCache(updatedCache);
+        localStorage.setItem("english_translation_cache", JSON.stringify(updatedCache));
+        saveStateToSQLite("english_translation_cache", updatedCache);
+
+        setActiveTranslation(noAiTranslation);
+        incrementWordCounter(queryKey, noAiTranslation);
+        logActivityAction("translated");
+
+        // Auto-redirect right tab to vocabulary drawer
+        setRightTab("vocabulary");
+      } catch (err: any) {
+        console.error(err);
+        setTranslationError(err.message || "Não foi possível carregar a tradução via API pública.");
+      } finally {
+        setIsTranslating(false);
+      }
+      return;
+    }
+
+    // 3. Fetch from LLM Server-side API gateway proxy (with AI)
     setIsTranslating(true);
     try {
       const response = await fetch("/api/translate", {
@@ -530,6 +613,7 @@ Você DEVE preencher todos os campos do formato JSON exigidos no esquema da resp
       const updatedCache = { ...translationCache, [queryKey]: translationData };
       setTranslationCache(updatedCache);
       localStorage.setItem("english_translation_cache", JSON.stringify(updatedCache));
+      saveStateToSQLite("english_translation_cache", updatedCache);
 
       setActiveTranslation(translationData);
       incrementWordCounter(queryKey, translationData);
@@ -547,6 +631,7 @@ Você DEVE preencher todos os campos do formato JSON exigidos no esquema da resp
         const updatedCache = { ...translationCache, [queryKey]: translationData };
         setTranslationCache(updatedCache);
         localStorage.setItem("english_translation_cache", JSON.stringify(updatedCache));
+        saveStateToSQLite("english_translation_cache", updatedCache);
 
         setActiveTranslation(translationData);
         incrementWordCounter(queryKey, translationData);
@@ -1106,15 +1191,275 @@ Você DEVE preencher todos os campos do formato JSON exigidos no esquema da resp
                 >
                   {/* Word translator view container */}
                   <div className="bg-slate-950 rounded-2xl border border-slate-800 p-4 mb-4">
-                    <h3 className="text-sm font-extrabold text-indigo-400 uppercase tracking-widest mb-3 flex items-center gap-1.5">
-                      <Sparkle className="w-4 h-4 text-amber-500" />
-                      Tradutor Integrado LLM
-                    </h3>
+                    <div className="flex items-center justify-between mb-3">
+                      <h3 className="text-sm font-extrabold text-indigo-400 uppercase tracking-widest flex items-center gap-1.5">
+                        <Sparkle className="w-4 h-4 text-amber-500" />
+                        Tradutor Integrado
+                      </h3>
+                      <button
+                        onClick={() => {
+                          setEditWord("");
+                          setEditTranslation("");
+                          setEditPhonetic("/.../");
+                          setEditPartOfSpeech("noun");
+                          setEditDefinition("");
+                          setEditExplanation("Prontuário de tradução inserido manualmente pelo estudante.");
+                          setEditLevel("A1");
+                          setEditExamples([
+                            { en: "", pt: "" },
+                            { en: "", pt: "" },
+                            { en: "", pt: "" }
+                          ]);
+                          setIsEditingTranslation(true);
+                        }}
+                        className="px-2 py-1 bg-slate-900 hover:bg-slate-800 text-indigo-400 hover:text-indigo-300 rounded-lg text-[10px] font-bold border border-slate-800 transition tracking-wide flex items-center gap-1 cursor-pointer"
+                        title="Escrever tradução do zero"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        Adicionar Manual
+                      </button>
+                    </div>
 
-                    {isTranslating ? (
+                    {/* Mapeamento entre IA (LLM) e Sem IA (API Pública / Manual) */}
+                    <div className="flex bg-slate-900 p-1 rounded-xl border border-slate-800/80 mb-3 gap-1">
+                      <button
+                        onClick={() => {
+                          setTranslationMode("ai");
+                          localStorage.setItem("english_translation_mode", "ai");
+                        }}
+                        className={`flex-1 py-1.5 rounded-lg text-[11px] font-bold transition flex items-center justify-center gap-1 cursor-pointer ${
+                          translationMode === "ai"
+                            ? "bg-indigo-650 bg-indigo-600 text-white shadow"
+                            : "text-slate-450 hover:text-slate-200"
+                        }`}
+                      >
+                        <Sparkles className="w-3 h-3 text-amber-400" />
+                        Traduzir com IA 🤖
+                      </button>
+                      <button
+                        onClick={() => {
+                          setTranslationMode("no_ai");
+                          localStorage.setItem("english_translation_mode", "no_ai");
+                        }}
+                        className={`flex-1 py-1.5 rounded-lg text-[11px] font-bold transition flex items-center justify-center gap-1 cursor-pointer ${
+                          translationMode === "no_ai"
+                            ? "bg-indigo-650 bg-indigo-600 text-white shadow"
+                            : "text-slate-450 hover:text-slate-200"
+                        }`}
+                      >
+                        <Globe className="w-3 h-3 text-sky-400" />
+                        Traduzir sem IA 🔌
+                      </button>
+                    </div>
+
+                    {/* Manual word typing lookup */}
+                    <div className="flex gap-1.5 mb-4">
+                      <div className="relative flex-1">
+                        <Search className="absolute left-2.5 top-2 w-3.5 h-3.5 text-slate-500" />
+                        <input
+                          type="text"
+                          placeholder="Digite um termo para traduzir..."
+                          value={manualTranslateInput}
+                          onChange={(e) => setManualTranslateInput(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" && manualTranslateInput.trim()) {
+                              handleWordLookup(manualTranslateInput.trim());
+                              setManualTranslateInput("");
+                            }
+                          }}
+                          className="w-full bg-slate-900 border border-slate-800 rounded-xl py-1.5 pl-8 pr-3 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-505 transition"
+                        />
+                      </div>
+                      <button
+                        onClick={() => {
+                          if (manualTranslateInput.trim()) {
+                            handleWordLookup(manualTranslateInput.trim());
+                            setManualTranslateInput("");
+                          }
+                        }}
+                        className="px-3 bg-indigo-650 hover:bg-indigo-600 text-white text-xs font-bold rounded-xl transition cursor-pointer flex items-center"
+                      >
+                        Buscar
+                      </button>
+                    </div>
+
+                    {isEditingTranslation ? (
+                      /* Formulario de Escrita Manual ou Edição */
+                      <div className="space-y-3 bg-slate-900/40 p-3 rounded-xl border border-slate-800/80">
+                        <div className="flex items-center justify-between border-b border-slate-800/60 pb-1.5">
+                          <span className="text-[11px] font-bold text-indigo-400">Escrita Manual de Tradução</span>
+                          <button
+                            onClick={() => setIsEditingTranslation(false)}
+                            className="text-[10px] text-slate-400 hover:text-white cursor-pointer"
+                          >
+                            ✕ Cancelar
+                          </button>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2">
+                          <div className="space-y-0.5">
+                            <label className="text-[9px] font-bold text-slate-400 uppercase">Input em Inglês</label>
+                            <input
+                              type="text"
+                              value={editWord}
+                              onChange={(e) => setEditWord(e.target.value)}
+                              placeholder="e.g. delicious"
+                              className="w-full bg-slate-950 border border-slate-800 rounded-lg py-1 px-2.5 text-xs text-white focus:outline-none focus:border-indigo-500"
+                            />
+                          </div>
+                          <div className="space-y-0.5">
+                            <label className="text-[9px] font-bold text-slate-400 uppercase">Tradução Oficial</label>
+                            <input
+                              type="text"
+                              value={editTranslation}
+                              onChange={(e) => setEditTranslation(e.target.value)}
+                              placeholder="e.g. delicioso"
+                              className="w-full bg-slate-950 border border-slate-800 rounded-lg py-1 px-2.5 text-xs text-white focus:outline-none focus:border-indigo-505"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-3 gap-2">
+                          <div className="space-y-0.5">
+                            <label className="text-[9px] font-bold text-slate-400 uppercase">Escrita Fonética</label>
+                            <input
+                              type="text"
+                              value={editPhonetic}
+                              onChange={(e) => setEditPhonetic(e.target.value)}
+                              placeholder="/dɪˈlɪʃ.əs/"
+                              className="w-full bg-slate-950 border border-slate-800 rounded-lg py-1 px-2.5 text-xs text-white"
+                            />
+                          </div>
+                          <div className="space-y-0.5">
+                            <label className="text-[9px] font-bold text-slate-400 uppercase">Classe Gramatical</label>
+                            <input
+                              type="text"
+                              value={editPartOfSpeech}
+                              onChange={(e) => setEditPartOfSpeech(e.target.value)}
+                              placeholder="adjective"
+                              className="w-full bg-slate-950 border border-slate-800 rounded-lg py-1 px-2.5 text-xs text-white"
+                            />
+                          </div>
+                          <div className="space-y-0.5">
+                            <label className="text-[9px] font-bold text-slate-400 uppercase">Nível CEFR</label>
+                            <select
+                              value={editLevel}
+                              onChange={(e) => setEditLevel(e.target.value)}
+                              className="w-full bg-slate-950 border border-slate-800 rounded-lg py-1 px-1.5 text-xs text-white font-medium"
+                            >
+                              <option value="A1">A1</option>
+                              <option value="A2">A2</option>
+                              <option value="B1">B1</option>
+                              <option value="B2">B2</option>
+                              <option value="C1">C1</option>
+                              <option value="C2">C2</option>
+                            </select>
+                          </div>
+                        </div>
+
+                        <div className="space-y-0.5">
+                          <label className="text-[9px] font-bold text-slate-400 uppercase">Definição em Inglês (Para Aprendizado)</label>
+                          <input
+                            type="text"
+                            value={editDefinition}
+                            onChange={(e) => setEditDefinition(e.target.value)}
+                            placeholder="Highly pleasant to the taste..."
+                            className="w-full bg-slate-950 border border-slate-800 rounded-lg py-1 px-2.5 text-xs text-white"
+                          />
+                        </div>
+
+                        <div className="space-y-0.5">
+                          <label className="text-[9px] font-bold text-slate-400 uppercase">Explicação / Memorização (Em Português)</label>
+                          <textarea
+                            value={editExplanation}
+                            onChange={(e) => setEditExplanation(e.target.value)}
+                            rows={2}
+                            placeholder="Insira detalhes de uso ou gírias..."
+                            className="w-full bg-slate-950 border border-slate-800 rounded-lg py-1 px-2.5 text-xs text-white resize-none"
+                          />
+                        </div>
+
+                        <div className="space-y-1.5">
+                          <label className="text-[9px] font-bold text-slate-400 uppercase block">Frase de Exemplo Bilíngue</label>
+                          {editExamples.slice(0, 1).map((ex, idx) => (
+                            <div key={idx} className="space-y-1 p-2 bg-slate-950 rounded-lg border border-slate-800/80">
+                              <input
+                                type="text"
+                                value={ex.en}
+                                onChange={(e) => {
+                                  const updated = [...editExamples];
+                                  updated[idx].en = e.target.value;
+                                  setEditExamples(updated);
+                                }}
+                                placeholder="Frase de Exemplo em Inglês..."
+                                className="w-full bg-transparent border-b border-slate-800 pb-0.5 text-xs text-slate-200 placeholder-slate-600 focus:outline-none"
+                              />
+                              <input
+                                type="text"
+                                value={ex.pt}
+                                onChange={(e) => {
+                                  const updated = [...editExamples];
+                                  updated[idx].pt = e.target.value;
+                                  setEditExamples(updated);
+                                }}
+                                placeholder="Tradução da frase para Português..."
+                                className="w-full bg-transparent pt-0.5 text-xs text-slate-450 placeholder-slate-650 focus:outline-none"
+                              />
+                            </div>
+                          ))}
+                        </div>
+
+                        <div className="flex justify-end gap-2 pt-1">
+                          <button
+                            onClick={() => setIsEditingTranslation(false)}
+                            className="px-2.5 py-1 bg-slate-800 hover:bg-slate-750 text-slate-350 text-[11px] font-bold rounded-lg transition"
+                          >
+                            Cancelar
+                          </button>
+                          <button
+                            onClick={() => {
+                              if (!editWord.trim()) return alert("Por favor, informe a palavra original em inglês!");
+                              if (!editTranslation.trim()) return alert("Por favor, digite a tradução correta!");
+
+                              const cleanW = editWord.trim().toLowerCase();
+                              const updatedTr: Translation = {
+                                word: cleanW,
+                                translation: editTranslation.trim(),
+                                phonetic: editPhonetic.trim() || "/.../",
+                                partOfSpeech: editPartOfSpeech.trim() || "Manual",
+                                definition: editDefinition.trim() || "Definição manual.",
+                                explanation: editExplanation.trim() || "Nenhuma explicação manual fornecida.",
+                                level: editLevel,
+                                examples: editExamples.filter(ex => ex.en.trim() !== ""),
+                                timestamp: Date.now()
+                              };
+
+                              const updatedCache = { ...translationCache, [cleanW]: updatedTr };
+                              setTranslationCache(updatedCache);
+                              localStorage.setItem("english_translation_cache", JSON.stringify(updatedCache));
+                              saveStateToSQLite("english_translation_cache", updatedCache);
+
+                              setActiveTranslation(updatedTr);
+                              setActiveWord(cleanW);
+                              incrementWordCounter(cleanW, updatedTr);
+
+                              setIsEditingTranslation(false);
+                            }}
+                            className="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-bold rounded-lg transition flex items-center gap-1 cursor-pointer"
+                          >
+                            <Check className="w-3 h-3" />
+                            Salvar Alterações
+                          </button>
+                        </div>
+                      </div>
+                    ) : isTranslating ? (
                       <div className="py-8 flex flex-col items-center justify-center text-slate-400">
                         <div className="w-8 h-8 rounded-full border-2 border-indigo-500/20 border-t-indigo-500 animate-spin mb-3" />
-                        <p className="text-xs font-medium">Consultando IA Gemini para tradução didática contextualizada...</p>
+                        <p className="text-xs font-medium">
+                          {translationMode === "ai"
+                            ? "Consultando IA para tradução didática..."
+                            : "Traduzindo via API pública..."}
+                        </p>
                       </div>
                     ) : activeTranslation ? (
                       <div>
@@ -1132,13 +1477,37 @@ Você DEVE preencher todos os campos do formato JSON exigidos no esquema da resp
                             </p>
                           </div>
                           
-                          <button
-                            onClick={() => speakTextAloud(activeTranslation.word)}
-                            className="p-2.5 bg-slate-900 hover:bg-slate-800 active:scale-95 text-sky-400 hover:text-sky-300 rounded-xl transition border border-slate-800"
-                            title="Ouvir pronúncia"
-                          >
-                            <Volume2 className="w-4 h-4" />
-                          </button>
+                          <div className="flex gap-1.5">
+                            <button
+                              onClick={() => {
+                                setEditWord(activeTranslation.word);
+                                setEditTranslation(activeTranslation.translation);
+                                setEditPhonetic(activeTranslation.phonetic || "/.../");
+                                setEditPartOfSpeech(activeTranslation.partOfSpeech || "noun");
+                                setEditDefinition(activeTranslation.definition || "");
+                                setEditExplanation(activeTranslation.explanation || "");
+                                setEditLevel(activeTranslation.level || "A1");
+                                setEditExamples(
+                                  activeTranslation.examples && activeTranslation.examples.length > 0
+                                    ? [...activeTranslation.examples]
+                                    : [{ en: "", pt: "" }, { en: "", pt: "" }, { en: "", pt: "" }]
+                                );
+                                setIsEditingTranslation(true);
+                              }}
+                              className="p-2.5 bg-slate-900 hover:bg-slate-800 active:scale-95 text-indigo-400 hover:text-indigo-300 rounded-xl transition border border-slate-800"
+                              title="Editar Tradução manualmente"
+                            >
+                              <Pencil className="w-4 h-4" />
+                            </button>
+                            
+                            <button
+                              onClick={() => speakTextAloud(activeTranslation.word)}
+                              className="p-2.5 bg-slate-900 hover:bg-slate-800 active:scale-95 text-sky-400 hover:text-sky-300 rounded-xl transition border border-slate-800"
+                              title="Ouvir pronúncia"
+                            >
+                              <Volume2 className="w-4 h-4" />
+                            </button>
+                          </div>
                         </div>
 
                         {/* Direct translation definition details */}
@@ -1162,22 +1531,26 @@ Você DEVE preencher todos os campos do formato JSON exigidos no esquema da resp
                         </div>
 
                         {/* Examples in bilingual formats */}
-                        <div>
-                          <span className="text-[10px] uppercase font-mono font-semibold text-slate-500">Exemplos Práticos Contextuais</span>
-                          <div className="space-y-2 mt-1.5">
-                            {activeTranslation.examples.map((ex, idx) => (
-                              <div key={idx} className="p-2 bg-slate-900 rounded-xl text-xs space-y-0.5 border border-slate-800/30">
-                                <p className="font-semibold text-slate-100 italic">{ex.en}</p>
-                                <p className="text-slate-400">{ex.pt}</p>
-                              </div>
-                            ))}
+                        {activeTranslation.examples && activeTranslation.examples.length > 0 && (
+                          <div>
+                            <span className="text-[10px] uppercase font-mono font-semibold text-slate-500">Exemplos Práticos Contextuais</span>
+                            <div className="space-y-2 mt-1.5">
+                              {activeTranslation.examples.map((ex, idx) => (
+                                <div key={idx} className="p-2 bg-slate-900 rounded-xl text-xs space-y-0.5 border border-slate-800/30">
+                                  <p className="font-semibold text-slate-100 italic">{ex.en}</p>
+                                  <p className="text-slate-400">{ex.pt}</p>
+                                </div>
+                              ))}
+                            </div>
                           </div>
-                        </div>
+                        )}
                       </div>
                     ) : (
                       <div className="py-6 text-center text-slate-500">
-                        <p className="text-xs">Nenhuma palavra analisada no momento.</p>
-                        <p className="text-[11px] text-slate-600 mt-1">Selecione e clique em qualquer palavra dos artigos de leitura na tela esquerda para carregar traduções com IA e guardá-las.</p>
+                        <p className="text-xs font-semibold">Nenhuma palavra analisada no momento.</p>
+                        <p className="text-[11px] text-slate-550 mt-1">
+                          Escreva acima ou selecione e clique em qualquer palavra no texto de leitura para ver sua tradução didática instantânea.
+                        </p>
                       </div>
                     )}
 
